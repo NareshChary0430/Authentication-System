@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import config from "../config/config.js";
 import authRouter from "../routes/auth.routes.js";
 
+
 export async function register(req, res) {
   try {
     const { username, email, password } = req.body;
@@ -60,7 +61,6 @@ export async function register(req, res) {
         email: newUser.email,
       },
       accessToken,
-
     });
 
   } catch (error) {
@@ -138,8 +138,7 @@ export async function refreshToken(req, res) {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
 
-    
-
+  
     res.status(200).json({
       accessToken: newAccessToken,
       message: "Access token refreshed successfully",
@@ -150,3 +149,5 @@ export async function refreshToken(req, res) {
     });
   }
 };
+f
+
