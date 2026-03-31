@@ -7,6 +7,12 @@ const authRouter = Router();
 
 authRouter.post("/register", authController.register);
 
+// POST /api/auth/verify-otp
+authRouter.post("/verify-otp", authController.verifyOtp);
+
+// POST /api/auth/resend-otp
+authRouter.post("/resend-otp", authController.resendOtp);
+
 // POST /api/auth/login
 
 authRouter.post("/login", authController.login);
