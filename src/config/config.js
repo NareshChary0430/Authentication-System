@@ -3,15 +3,15 @@ import dotenv from "dotenv";
 dotenv.config();
 
 if (!process.env.MONGO_URI) {
-  console.error("Error: MONGO_URI is not defined in the environment variables.");
+  throw new Error("Error: MONGO_URI is not defined in the environment variables.");
 }
 
 if (!process.env.PORT) {
-  console.error("Error: PORT is not defined in the environment variables.");
+  throw new Error("Error: PORT is not defined in the environment variables.");
 }
 
 if(!process.env.JWT_SECRET) {
-  console.error("Error: JWT_SECRET is not defined in the environment variables.");
+  throw new Error ("Error: JWT_SECRET is not defined in the environment variables.");
 }
 
 const config = {

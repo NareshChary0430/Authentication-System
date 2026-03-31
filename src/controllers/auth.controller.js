@@ -2,56 +2,63 @@ import userModel from "../models/user.model.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import config from "../config/config.js";
-import authRouter from "../routes/auth.routes.js";
+import Session from "../models/session.model.js";
 
 
+// ================= REGISTER =================
 export async function register(req, res) {
+
   try {
     const { username, email, password } = req.body;
 
-    if (!username || !email || !password) {
-      return res.status(400).json({
-        message: "All fields are required",
-      });
-    }
-
-    const isAlreadyExist = await userModel.findOne({
-      $or: [{ email }, { username }],
+    const isAlreadyRegistered = await userModel.findOne({
+      $or: [{ username }, { email }],
     });
 
-    if (isAlreadyExist) {
-      return res.status(409).json({
-        message: "User already exists",
-      });
+    if (isAlreadyRegistered) {
+      return res
+        .status(409)
+        .json({ message: "Username or email already exists" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newUser = new userModel({
+    const newUser = await userModel.create({
       username,
       email,
       password: hashedPassword,
     });
 
-    await newUser.save(); // ✅ IMPORTANT
-
-    const accessToken = jwt.sign(
-      { id: newUser._id },
-      config.JWT_SECRET,
-      { expiresIn: "15m" }
-    );
-
+    // ✅ Generate Refresh Token
     const refreshToken = jwt.sign(
       { id: newUser._id },
       config.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
+    // ✅ Hash Refresh Token
+    const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+
+    // ✅ Create Session
+    const session = await Session.create({
+      user: newUser._id,
+      refreshToken: refreshTokenHash,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+
+    // ✅ Access Token with sessionId
+    const accessToken = jwt.sign(
+      { id: newUser._id, sessionId: session._id },
+      config.JWT_SECRET,
+      { expiresIn: "15m" }
+    );
+
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
-      secure: true,
+      secure: process.env.NODE_ENV === "production",
       sameSite: "strict",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
     res.status(201).json({
@@ -62,65 +69,142 @@ export async function register(req, res) {
       },
       accessToken,
     });
-
   } catch (error) {
-    res.status(500).json({
-      message: "Server error",
-      error: error.message,
-    });
+    res.status(500).json({ message: error.message });
   }
 }
 
-export async function getMe(req, res) {
-  try {
-    const authHeader = req.headers.authorization;
+// ================= LOGIN =================
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({
-        message: "Invalid token format",
-      });
+export async function login(req, res) {
+  try {
+    const { email, password } = req.body;
+    const user = await userModel.findOne({ email });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordValid) {
+      return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    const token = authHeader.split(" ")[1];
+    // ✅ Generate Refresh Token
+    const refreshToken = jwt.sign(
+      { id: user._id },
+      config.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    // ✅ Hash Refresh Token
+    const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+
+    // ✅ Create Session
+    const session = await Session.create({
+      user: user._id,
+      refreshToken: refreshTokenHash,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+
+    // ✅ Access Token with sessionId
+    const accessToken = jwt.sign(
+      { id: user._id, sessionId: session._id },
+      config.JWT_SECRET,
+      { expiresIn: "15m" }
+    );
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure:true,
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.status(200).json({
+      message: "Logged in successfully",      
+      user: {
+        username: user.username,
+        email: user.email,
+      },
+      accessToken,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
+
+// ================= GET ME =================
+export async function getMe(req, res) {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+
+    if (!token) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     const decoded = jwt.verify(token, config.JWT_SECRET);
 
-    const user = await userModel
-      .findById(decoded.id)
-      .select("username email");
+    const user = await userModel.findById(decoded.id);
 
     if (!user) {
-      return res.status(404).json({
-        message: "User not found",
-      });
+      return res.status(404).json({ message: "User not found" });
     }
 
     res.status(200).json({
-      user,
-      message: "User fetched successfully",
+      message: "User details fetched successfully",
+      user: {
+        username: user.username,
+        email: user.email,
+      },
     });
-
   } catch (error) {
-    res.status(401).json({
-      message: "Invalid or expired token",
-    });
+    res.status(401).json({ message: "Invalid token" });
   }
 }
 
+
+// ================= REFRESH TOKEN =================
 export async function refreshToken(req, res) {
   try {
     const refreshToken = req.cookies.refreshToken;
 
     if (!refreshToken) {
-      return res.status(401).json({
-        message: "No refresh token provided",
-      });
+      return res.status(401).json({ message: "Unauthorized" });
     }
 
     const decoded = jwt.verify(refreshToken, config.JWT_SECRET);
 
-    const newAccessToken = jwt.sign(
-      { id: decoded.id },
+    // 🔍 Find all sessions of user
+    const sessions = await Session.find({
+      user: decoded.id,
+      revoked: false,
+    });
+
+    let validSession = null;
+
+    // ✅ Compare using bcrypt.compare (FIXED)
+    for (const session of sessions) {
+      const isMatch = await bcrypt.compare(
+        refreshToken,
+        session.refreshToken
+      );
+
+      if (isMatch) {
+        validSession = session;
+        break;
+      }
+    }
+
+    if (!validSession) {
+      return res.status(401).json({ message: "Invalid session" });
+    }
+
+    // ✅ Generate new tokens
+    const accessToken = jwt.sign(
+      { id: decoded.id, sessionId: validSession._id },
       config.JWT_SECRET,
       { expiresIn: "15m" }
     );
@@ -131,23 +215,105 @@ export async function refreshToken(req, res) {
       { expiresIn: "7d" }
     );
 
+    // ✅ Hash new refresh token
+    const newRefreshTokenHash = await bcrypt.hash(newRefreshToken, 10);
+
+    // ✅ Update session (FIXED field name)
+    validSession.refreshToken = newRefreshTokenHash;
+    await validSession.save();
+
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
-      secure: true,
+      secure: process.env.NODE_ENV === "production",
       sameSite: "strict",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-  
     res.status(200).json({
-      accessToken: newAccessToken,
       message: "Access token refreshed successfully",
+      accessToken,
     });
   } catch (error) {
-    res.status(401).json({
-      message: "Invalid or expired refresh token",
+    res.status(401).json({ message: "Invalid refresh token" });
+  }
+}
+
+
+// ================= LOGOUT =================
+export async function logout(req, res) {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+
+    if (!refreshToken) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    // 🔍 Find all sessions
+    const sessions = await Session.find({ revoked: false });
+
+    let validSession = null;
+
+    // ✅ Compare instead of hashing (FIXED)
+    for (const session of sessions) {
+      const isMatch = await bcrypt.compare(
+        refreshToken,
+        session.refreshToken
+      );
+
+      if (isMatch) {
+        validSession = session;
+        break;
+      }
+    }
+
+    if (!validSession) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    // ✅ Revoke session
+    validSession.revoked = true;
+    await validSession.save();
+
+    res.clearCookie("refreshToken");
+
+    res.status(200).json({
+      message: "Logged out successfully",
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+}
+
+// ================= LOGOUT ALL SESSIONS =================
+export async function logoutAll(req, res) {
+  try {
+    const refreshToken = req.cookies.refreshToken;
+
+    if (!refreshToken) {
+      return res.status(400).json({ message: "Unauthorized" });
+    }
+
+    const decoded = jwt.verify(refreshToken, config.JWT_SECRET);  
+
+
+    // 🔍 Find all sessions of user
+
+    await Session.updateMany({
+      user: decoded.id,
+      revoked: false,
+    }, {
+      revoked: true,
+    })
+
+    res.clearCookie("refreshToken");
+
+    res.status(200).json({
+      message: "Logged out from all sessions successfully",
     });
   }
-};
-f
+
+    catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+} 
 
